@@ -8,97 +8,98 @@
 
 ## Architecture Overview
 
+---
+ 
+## Architecture Overview
+ 
 ```mermaid
-flowchart TB
+flowchart TD
     subgraph CRM["CRM / Origination System"]
-        SF["Document Upload<br/>Regulated PDF + Case Metadata"]
+        SF["Document Upload — Regulated PDF + Case Metadata"]
     end
-
+ 
     subgraph EVENT["Event-Driven Ingestion"]
-        EB["Event Bus<br/>(EventBridge)"]
-        SQS["Message Queue<br/>(SQS + DLQ)"]
+        direction TB
+        EB["Event Bus (EventBridge)"]
+        SQS["Message Queue (SQS)"]
+        DLQ["Dead-Letter Queue"]
+        EB --> SQS
+        SQS -->|"Poison messages"| DLQ
     end
-
-    subgraph ORCH["Durable Workflow Orchestration  —  Step Functions"]
-        V["① Validate<br/>Schema · Idempotency<br/>Version · Authorization"]
-        MCP["② MCP Retrieval<br/>OAuth 2.1 scoped read<br/>Document + Context"]
-        STORE["③ Persist Immutable Source<br/>Encrypted S3<br/>PDF + Metadata + Hash"]
-        PARSE["④ Parse / OCR / Chunk<br/>Normalize text<br/>Generate embeddings"]
+ 
+    subgraph ORCH["Durable Workflow Orchestration — Step Functions"]
+        direction TB
+        V["① Validate — Schema · Idempotency · Version · Authorization"]
+        MCP["② MCP Retrieval — OAuth 2.1 scoped read · Document + Context"]
+        STORE["③ Persist Immutable Source — Encrypted S3 · PDF + Metadata + Hash"]
+        PARSE["④ Parse / OCR / Chunk — Normalize text · Generate embeddings"]
+        V --> MCP --> STORE --> PARSE
     end
-
+ 
     subgraph RAG["RAG & Knowledge Base"]
-        KB["Vector Knowledge Base<br/>(Bedrock KB)<br/>Chunks + Metadata Filters"]
-        GQ["⑤ Generate Candidate<br/>Golden Questions<br/>from source document"]
-        GV["⑥ Validate & Curate<br/>Golden Test Suite<br/>Rule checks + reviewer seed"]
+        direction TB
+        KB["Vector Knowledge Base (Bedrock KB) — Chunks + Metadata Filters"]
+        GQ["⑤ Generate Candidate Golden Questions from source document"]
+        GV["⑥ Validate & Curate Golden Test Suite — Rule checks + reviewer seed"]
+        KB --> GQ --> GV
     end
-
+ 
     subgraph GEN["Grounded Generation"]
-        BA["⑦ Bedrock Agent<br/>Retrieve evidence<br/>Generate summary"]
-        SUM["Structured Output<br/>Summary · Citations<br/>Risk flags · Abstentions"]
+        direction TB
+        BA["⑦ Bedrock Agent — Retrieve evidence · Generate summary"]
+        SUM["Structured Output — Summary · Citations · Risk flags · Abstentions"]
+        BA --> SUM
     end
-
+ 
     subgraph EVAL["Evaluation Harness"]
-        DET["⑧a Deterministic Checks<br/>Clause coverage · Keywords<br/>Schema · Prohibited claims"]
-        LLM["⑧b LLM-as-Judge<br/>Accuracy · Grounding<br/>Clarity · Policy alignment"]
-        AGG["Aggregate Score<br/>+ Failure Taxonomy"]
-        GATE{"Quality Gate<br/>Pass thresholds?"}
+        direction TB
+        DET["⑧a Deterministic Checks — Clause coverage · Keywords · Schema · Prohibited claims"]
+        LLM["⑧b LLM-as-Judge — Accuracy · Grounding · Clarity · Policy alignment"]
+        AGG["Aggregate Score + Failure Taxonomy"]
+        GATE{"Quality Gate — Pass thresholds?"}
+        DET --> LLM --> AGG --> GATE
     end
-
-    subgraph HITL["Human-in-the-Loop Review  —  LangGraph"]
-        TASK["⑨ LangGraph Interrupt<br/>Create review task<br/>via LangChain HITL toolkit"]
-        WAIT["⑩ Durable Wait<br/>LangGraph checkpoint +<br/>Step Functions callback"]
-        DEC{"Reviewer<br/>Decision"}
+ 
+    subgraph HITL["Human-in-the-Loop Review — LangGraph"]
+        direction TB
+        TASK["⑨ LangGraph Interrupt — Create review task via LangChain HITL toolkit"]
+        WAIT["⑩ Durable Wait — LangGraph checkpoint + Step Functions callback"]
+        DEC{"Reviewer Decision"}
+        TASK --> WAIT --> DEC
     end
-
+ 
     subgraph WRITE["Write-Back & Publish"]
-        APPROVE["⑪a Approve<br/>Lock artifacts<br/>Write to CRM via MCP"]
-        REJECT["⑪b Reject<br/>Update status<br/>Notify requester"]
-        CORRECT["⑪c Correct<br/>Capture edits<br/>Revise & re-evaluate"]
-        PUB["⑫ Publish Event<br/>DocumentSummaryApproved"]
+        direction TB
+        APPROVE["⑪a Approve — Lock artifacts · Write to CRM via MCP"]
+        REJECT["⑪b Reject — Update status · Notify requester"]
+        CORRECT["⑪c Correct — Capture edits · Revise & re-evaluate"]
+        PUB["⑫ Publish Event — DocumentSummaryApproved"]
+        APPROVE --> PUB
+        REJECT --> PUB
     end
-
+ 
     subgraph OBS["Observability"]
-        SNS["SNS Notifications<br/>Compliance · Ops · Requester"]
-        CW["CloudWatch<br/>Logs · Metrics · Traces · Alarms"]
+        direction TB
+        SNS["SNS Notifications — Compliance · Ops · Requester"]
+        CW["CloudWatch — Logs · Metrics · Traces · Alarms"]
     end
-
-    %% ── Main Flow ──
-    SF -->|"Document event<br/>(reference only — no PII)"| EB
-    EB --> SQS
+ 
+    %% ── Main vertical flow ──
+    SF -->|"Document event (reference only — no PII)"| EB
     SQS --> V
-    V --> MCP
-    MCP --> STORE
-    STORE --> PARSE
     PARSE --> KB
-
-    KB --> GQ
-    GQ --> GV
-
     KB --> BA
     GV -.->|"Golden suite"| DET
-    BA --> SUM
-
     SUM --> DET
-    DET --> LLM
-    LLM --> AGG
-    AGG --> GATE
-
-    GATE -->|"Fail"| BA
+    GATE -->|"Fail — revise"| BA
     GATE -->|"Pass"| TASK
-    TASK --> WAIT
-    WAIT --> DEC
-
     DEC -->|"Approve"| APPROVE
     DEC -->|"Reject"| REJECT
     DEC -->|"Correct"| CORRECT
-    CORRECT --> BA
-
-    APPROVE --> PUB
-    REJECT --> PUB
+    CORRECT -->|"Re-generate"| BA
     PUB --> SNS
     PUB --> CW
-    SQS -->|"Poison messages"| DLQ["DLQ"]
-
+ 
     %% ── Styles ──
     classDef crmNode fill:#E8734A,stroke:#C45A2E,color:#fff
     classDef eventNode fill:#2B6CB0,stroke:#1B3A5C,color:#fff
@@ -111,7 +112,7 @@ flowchart TB
     classDef obsNode fill:#718096,stroke:#4A5568,color:#fff
     classDef gateNode fill:#E53E3E,stroke:#C53030,color:#fff
     classDef dlqNode fill:#E53E3E,stroke:#C53030,color:#fff
-
+ 
     class SF crmNode
     class EB,SQS eventNode
     class V,MCP,STORE,PARSE orchNode
@@ -125,7 +126,7 @@ flowchart TB
     class SNS,CW obsNode
     class DLQ dlqNode
 ```
-
+ 
 ---
 
 ## Pipeline Stages
